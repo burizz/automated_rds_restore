@@ -63,6 +63,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Create RDS Instance inside RDS Cluster
 	createRDSInstanceErr := createRDSInstance(rdsClient, restoreRDS)
 	if createRDSInstanceErr != nil {
 		fmt.Printf("Create RDS Instance Err: %v", createRDSInstanceErr)
@@ -304,35 +305,45 @@ func rdsClusterExists(rdsClientSess *rds.RDS, rdsClusterName string) (dbExists b
 			switch aerr.Code() {
 			case rds.ErrCodeDBClusterNotFoundFault:
 				//fmt.Println(rds.ErrCodeDBClusterNotFoundFault, aerr.Error())
-				fmt.Printf("RDS cluster [%v] doesnt exist, skipping delete step", rdsClusterName)
+				fmt.Printf("RDS cluster [%v] doesnt exist, skipping delete step\n", rdsClusterName)
 				return false, nil
 			default:
 				fmt.Println(aerr.Error())
-				return false, fmt.Errorf("Describe Err on cluster [%v]\n", rdsClusterName)
+				return false, fmt.Errorf("Describe Err on cluster [%v]", rdsClusterName)
 			}
 		} else {
 			// Print the error, cast err to awserr.Error to get the Code and
 			// Message from an error.
 			fmt.Println(err.Error())
-				return false, fmt.Errorf("Describe Err on cluster [%v]\n", rdsClusterName)
+				return false, fmt.Errorf("Describe Err on cluster [%v]", rdsClusterName)
 		}
 	}
 
-	fmt.Printf("RDS cluster [%v] already exists, deleting it now ...", rdsClusterName)
+	fmt.Printf("RDS cluster [%v] already exists, deleting it now ...\n", rdsClusterName)
 	return true, nil
 }
 
 func waitUntilRDSClusterDeleted(rdsClientSess *rds.RDS, rdsClusterName string) error {
-	input := &rds.DescribeDBInstancesInput{
-		Filters: []*rds.Filter{
-			{
-				Name: aws.String(rdsClusterName),
-			},
-		},
+	// TODO: This doesnt work
+	//input := &rds.DescribeDBInstancesInput{
+		//Filters: []*rds.Filter{
+			//{
+				//Name: aws.String("db-cluster-id"),
+				//Values: []*string{aws.String(rdsClusterName)},
+			//},
+		//},
+	//}
 
+
+	rdsInstanceName := rdsClusterName + "-0"
+	
+	input := &rds.DescribeDBInstancesInput{
+		DBInstanceIdentifier: aws.String(rdsInstanceName),
 	}
 
-	fmt.Printf("Waiting until RDS cluster [%v] is fully deleted ...", rdsClusterName)
+	fmt.Println(input)
+
+	fmt.Printf("Waiting until RDS cluster [%v] is fully deleted ...\n", rdsClusterName)
 
 	err := rdsClientSess.WaitUntilDBInstanceDeleted(input)
 	if err != nil {
@@ -344,15 +355,23 @@ func waitUntilRDSClusterDeleted(rdsClientSess *rds.RDS, rdsClusterName string) e
 }
 
 func waitUntilRDSClusterCreated(rdsClientSess *rds.RDS, rdsClusterName string) error {
-	input := &rds.DescribeDBInstancesInput{
-		Filters: []*rds.Filter{
-			{
-				Name: aws.String(rdsClusterName),
-			},
-		},
-	}
+	// TODO: this doesnt work
+	//input := &rds.DescribeDBInstancesInput{
+		//Filters: []*rds.Filter{
+			//{
+				//Name: aws.String("db-cluster-id"),
+				//Values: []*string{aws.String(rdsClusterName)},
+			//},
+		//},
+	//}
 
-	fmt.Printf("Waiting until RDS cluster [%v] is fully created ...", rdsClusterName)
+	rdsInstanceName := rdsClusterName + "-0"
+	
+	input := &rds.DescribeDBInstancesInput{
+		DBInstanceIdentifier: aws.String(rdsInstanceName),
+	}
+	
+	fmt.Printf("Waiting until RDS cluster [%v] is fully created ...\n", rdsClusterName)
 
 	err := rdsClientSess.WaitUntilDBInstanceAvailable(input)
 	if err != nil {
@@ -370,7 +389,7 @@ func waitUntilRDSInstanceCreated(rdsClientSess *rds.RDS, rdsClusterName string) 
 		DBInstanceIdentifier: aws.String(rdsInstanceName),
 	}
 
-	fmt.Printf("Waiting until RDS instance [%v] inside cluster [%v] is fully created ...", rdsInstanceName,  rdsClusterName)
+	fmt.Printf("Waiting until RDS instance [%v] inside cluster [%v] is fully created ...\n", rdsInstanceName,  rdsClusterName)
 
 	err := rdsClientSess.WaitUntilDBInstanceAvailable(input)
 	if err != nil {
