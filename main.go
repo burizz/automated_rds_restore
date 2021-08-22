@@ -39,6 +39,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Check if RDS instance exists, if it doesn't skip Instance delete step
 	if rdsInstanceExists {
 		// Delete RDS instance
 		deleteInstanceErr := deleteRDSInstance(rdsClient, restoreRDS)
@@ -52,28 +53,29 @@ func main() {
 			fmt.Printf("Wait RDS Instance delete Err : %v", waitDeleteInstanceErr)
 			os.Exit(1)
 		}
-	}
-
-	// Check if RDS cluster exists, if it doesn't, skip Cluster delete step
-	rdsClusterExists, checkRDSClusterExistsErr := rdsClusterExists(rdsClient, restoreRDS)
-	if checkRDSClusterExistsErr != nil {
-		fmt.Printf("Check if RDS Cluster exists Err: %v", checkRDSClusterExistsErr)
-		os.Exit(1)
-	}
-
-	if rdsClusterExists {
-		// Delete RDS cluster
-		deleteClusterErr := deleteRDSCluster(rdsClient, restoreRDS)
-		if deleteClusterErr != nil {
-			fmt.Printf("Delete RDS Cluster Err: %v", deleteClusterErr)
+	} else {
+		// Check if RDS cluster exists, if it doesn't, skip Cluster delete step
+		// Should be executed only if Instance is deleted first, as instance deletion actually deletes cluster as well
+		rdsClusterExists, checkRDSClusterExistsErr := rdsClusterExists(rdsClient, restoreRDS)
+		if checkRDSClusterExistsErr != nil {
+			fmt.Printf("Check if RDS Cluster exists Err: %v", checkRDSClusterExistsErr)
 			os.Exit(1)
 		}
 
-		// Wait until RDS Cluster is deleted
-		waitDeleteClusterErr := waitUntilRDSClusterDeleted(rdsClient, restoreRDS)
-		if waitDeleteClusterErr != nil {
-			fmt.Printf("Wait RDS Cluster delete Err : %v", waitDeleteClusterErr)
-			os.Exit(1)
+		if rdsClusterExists {
+			// Delete RDS cluster
+			deleteClusterErr := deleteRDSCluster(rdsClient, restoreRDS)
+			if deleteClusterErr != nil {
+				fmt.Printf("Delete RDS Cluster Err: %v", deleteClusterErr)
+				os.Exit(1)
+			}
+
+			// Wait until RDS Cluster is deleted
+			waitDeleteClusterErr := waitUntilRDSClusterDeleted(rdsClient, restoreRDS)
+			if waitDeleteClusterErr != nil {
+				fmt.Printf("Wait RDS Cluster delete Err : %v", waitDeleteClusterErr)
+				os.Exit(1)
+			}
 		}
 	}
 
@@ -481,9 +483,9 @@ func waitUntilRDSClusterDeleted(rdsClientSess *rds.RDS, rdsClusterName string) e
 
 	// Check until deleted 
 	for i := 0; i < maxWaitAttempts; i++ {
-		// TODO: fix output sometimes appears as - 2.81e-07 
 		elapsedTime := time.Since(start)
-		fmt.Printf("Deletion elapsed time: %v\n", elapsedTime)
+		formattedTime := fmtDuration(elapsedTime)
+		fmt.Printf("Deletion elapsed time: %v\n", formattedTime)
 
 		resp, err := rdsClientSess.DescribeDBClusters(input)
 		if err != nil {
@@ -515,9 +517,9 @@ func waitUntilRDSClusterCreated(rdsClientSess *rds.RDS, rdsClusterName string) e
 	start := time.Now()
 
 	for i := 0; i < maxWaitAttempts; i++ {
-		// TODO: fix output sometimes appears as - 2.81e-07 
 		elapsedTime := time.Since(start)
-		fmt.Printf("Creation elapsed time: %v\n", elapsedTime)
+		formattedTime := fmtDuration(elapsedTime)
+		fmt.Printf("Creation elapsed time: %v\n", formattedTime)
 
 		resp, err := rdsClientSess.DescribeDBClusters(input)
 
@@ -593,4 +595,13 @@ func waitUntilRDSInstanceCreated(rdsClientSess *rds.RDS, rdsClusterName string) 
 
 	fmt.Printf("RDS instance [%v] created successfully in RDS cluster [%v]\n", rdsInstanceName, rdsClusterName)
 	return nil
+}
+
+func fmtDuration(d time.Duration) string {
+    d = d.Round(time.Minute)
+    h := d / time.Hour
+    d -= h * time.Hour
+    m := d / time.Minute
+	s := d / time.Second
+    return fmt.Sprintf("%02dh%02dm%02ds", h, m, s)
 }
