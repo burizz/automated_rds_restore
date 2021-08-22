@@ -21,6 +21,7 @@ func main() {
 	awsRegion := "us-east-1"
 	sourceRDS := "schedool-db"
 	restoreRDS := "schedool-restore-db"
+	securityGroupId := ""
 	// TODO: if restoreTime provided use it instead of UseLatestRestorableTime
 	// restoreTime := ""
 	// TODO: loglevel = "DEBUG"
@@ -80,7 +81,7 @@ func main() {
 	}
 
 	// Restore point in time RDS into a new cluster
-	restoreErr := restorePointInTimeRDS(rdsClient, sourceRDS, restoreRDS)
+	restoreErr := restorePointInTimeRDS(rdsClient, sourceRDS, restoreRDS, securityGroupId)
 	if restoreErr != nil {
 		fmt.Printf("Restore Point-In-Time RDS Err: %v", restoreErr)
 		os.Exit(1)
@@ -122,12 +123,22 @@ func initRDSClient(awsRegion string) (*rds.RDS, error) {
 	return svc, nil
 }
 
-func restorePointInTimeRDS(rdsClientSess *rds.RDS, sourceRDS string, destinationRDS string) error {
+func restorePointInTimeRDS(rdsClientSess *rds.RDS, sourceRDS string, destinationRDS string, securityGroupId string) error {
 	// Restore RDS cluster into a new cluster using point in time
 	input := &rds.RestoreDBClusterToPointInTimeInput{
-		DBClusterIdentifier:       aws.String(destinationRDS),
-		UseLatestRestorableTime:   aws.Bool(true),
-		SourceDBClusterIdentifier: aws.String(sourceRDS),
+		DBClusterIdentifier:       aws.String(destinationRDS), // Required
+		UseLatestRestorableTime:   aws.Bool(true), // Required
+		SourceDBClusterIdentifier: aws.String(sourceRDS), // Required
+		VpcSecurityGroupIds: []*string{
+			aws.String(securityGroupId), // Required
+			// More values ...
+		},
+		//Tags: []*rds.Tag{
+			//{
+				//Key: aws.String("tag_key"),
+				//Value: aws.String("tag_value"),
+			//},
+		//},
 	}
 
 	fmt.Printf("Creating RDS cluster [%v] from latest Point-In-Time restore of [%v]\n", destinationRDS, sourceRDS)
