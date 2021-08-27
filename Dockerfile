@@ -23,7 +23,7 @@ COPY ./main.go ./main.go
 #RUN CGO_ENABLED=0 go test -v test/tests.go
 
 # Build binary
-RUN go build -o bin/utilization-server main.go
+RUN go build -o bin/automated_rds_restore main.go 
 # RUN go install -v ./...
 
 ### Run stage
