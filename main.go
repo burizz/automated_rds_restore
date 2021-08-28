@@ -12,24 +12,32 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 )
 
+// TODO: test if replaced instance will be detected properly by Terraform and not try to replace it again
 // TODO: bitbucket pipeline to build and push in ECR
 // TODO: k8s cron job deploy - pulumi or helm
-// TODO: add monitoring if it fails to generate an alert
-// TODO: test if replaced instance will be detected properly by Terraform and not try to replace it again
 // TODO: implement instance Wait functions in the same way as the cluster ones
 // TODO: loglevel = "DEBUG"
-// TODO: go through remaining todos in code
+// TODO: delete all instances inside cluster, nevermind how many they are
+// TODO: add monitoring if it fails to generate an alert
 
 func main() {
 	// Env Vars
 	awsRegion := os.Getenv("awsRegion")
+
 	sourceRDS := os.Getenv("sourceRDS")
 	restoreRDS := os.Getenv("restoreRDS")
 	rdsSubnetGroup := os.Getenv("rdsSubnetGroup")
 	rdsSecurityGroupId := os.Getenv("rdsSecurityGroupId")
-	// Optional restore date and time, if not provided will restore latest 
+
+	// Optional restore date and time - defaults to latest available point in time
 	restoreDate := os.Getenv("restoreDate")
 	restoreTime := os.Getenv("restoreTime")
+
+	// Optional instance type - defaults to db.t3.small
+	rdsInstanceType := os.Getenv("rdsInstanceType")
+
+	// Optional rds engine - defaults to aurora-mysql
+	rdsEngine := os.Getenv("rdsEngine")
 
 	// Params
 	var restoreParams = map[string]string{
@@ -54,12 +62,27 @@ func main() {
 		} else {
 			restoreParams["restoreFromTime"] = restoreDate + "T01:00:00.000Z"
 		}
-
 		fmt.Printf("Restore time set to %v\n", restoreParams["restoreFromTime"])
+	} else {
+		fmt.Printf("Restore time set to latest available\n")
+	}
+
+	// If instance type provided change default
+	if rdsInstanceType != "" {
+		restoreParams["rdsInstanceType"] = rdsInstanceType
+	} else {
+		restoreParams["rdsInstanceType"] = "db.t3.small"
+	}
+
+	// If rds engine provided change default
+	if rdsEngine != "" {
+		restoreParams["rdsEngine"] = rdsEngine
+	} else {
+		restoreParams["rdsEngine"] = "aurora-mysql"
 	}
 
 	// Check if RDS instance exists, if it doesn't, skip Instance delete step
-	rdsInstanceExists, checkRDSInstanceExistsErr := rdsInstanceExists(rdsClient, restoreRDS)
+	rdsInstanceExists, checkRDSInstanceExistsErr := rdsInstanceExists(rdsClient, restoreParams)
 	if checkRDSInstanceExistsErr != nil {
 		fmt.Printf("Check if RDS Instance exists Err: %v", checkRDSInstanceExistsErr)
 		os.Exit(1)
@@ -68,13 +91,13 @@ func main() {
 	// Check if RDS instance exists, if it doesn't skip Instance delete step
 	if rdsInstanceExists {
 		// Delete RDS instance
-		deleteInstanceErr := deleteRDSInstance(rdsClient, restoreRDS)
+		deleteInstanceErr := deleteRDSInstance(rdsClient, restoreParams)
 		if deleteInstanceErr != nil {
 			fmt.Printf("Delete RDS Instance Err: %v", deleteInstanceErr)
 			os.Exit(1)
 		}
 
-		waitDeleteInstanceErr := waitUntilRDSInstanceDeleted(rdsClient, restoreRDS)
+		waitDeleteInstanceErr := waitUntilRDSInstanceDeleted(rdsClient, restoreParams)
 		if waitDeleteInstanceErr != nil {
 			fmt.Printf("Wait RDS Instance delete Err : %v", waitDeleteInstanceErr)
 			os.Exit(1)
@@ -83,7 +106,7 @@ func main() {
 
 	// Check if RDS cluster exists, if it doesn't, skip Cluster delete step
 	// Should be executed only if Instance is deleted first, as instance deletion actually deletes cluster as well
-	rdsClusterExists, checkRDSClusterExistsErr := rdsClusterExists(rdsClient, restoreRDS)
+	rdsClusterExists, checkRDSClusterExistsErr := rdsClusterExists(rdsClient, restoreParams)
 	if checkRDSClusterExistsErr != nil {
 		fmt.Printf("Check if RDS Cluster exists Err: %v", checkRDSClusterExistsErr)
 		os.Exit(1)
@@ -91,14 +114,14 @@ func main() {
 
 	if rdsClusterExists {
 		// Delete RDS cluster
-		deleteClusterErr := deleteRDSCluster(rdsClient, restoreRDS)
+		deleteClusterErr := deleteRDSCluster(rdsClient, restoreParams)
 		if deleteClusterErr != nil {
 			fmt.Printf("Delete RDS Cluster Err: %v", deleteClusterErr)
 			os.Exit(1)
 		}
 
 		// Wait until RDS Cluster is deleted
-		waitDeleteClusterErr := waitUntilRDSClusterDeleted(rdsClient, restoreRDS)
+		waitDeleteClusterErr := waitUntilRDSClusterDeleted(rdsClient, restoreParams)
 		if waitDeleteClusterErr != nil {
 			fmt.Printf("Wait RDS Cluster delete Err : %v", waitDeleteClusterErr)
 			os.Exit(1)
@@ -113,21 +136,21 @@ func main() {
 	}
 
 	// Wait until DB instance created
-	waitClusterCreateErr := waitUntilRDSClusterCreated(rdsClient, restoreRDS)
+	waitClusterCreateErr := waitUntilRDSClusterCreated(rdsClient, restoreParams)
 	if waitClusterCreateErr != nil {
 		fmt.Printf("Wait RDS Cluster create Err: %v", waitClusterCreateErr)
 		os.Exit(1)
 	}
 
 	// Create RDS Instance in RDS Cluster
-	createRDSInstanceErr := createRDSInstance(rdsClient, restoreRDS)
+	createRDSInstanceErr := createRDSInstance(rdsClient, restoreParams)
 	if createRDSInstanceErr != nil {
 		fmt.Printf("Create RDS Instance Err: %v", createRDSInstanceErr)
 		os.Exit(1)
 	}
 
 	// Wait until DB instance created in RDS cluster
-	waitInstanceCreateErr := waitUntilRDSInstanceCreated(rdsClient, restoreRDS)
+	waitInstanceCreateErr := waitUntilRDSInstanceCreated(rdsClient, restoreParams)
 	if waitInstanceCreateErr != nil {
 		fmt.Printf("Wait RDS Instance create Err: %v", waitInstanceCreateErr)
 		os.Exit(1)
@@ -269,14 +292,15 @@ func restorePointInTimeRDS(rdsClientSess *rds.RDS, restoreParams map[string]stri
 }
 
 // Create RDS instance ine RDS cluster
-func createRDSInstance(rdsClientSess *rds.RDS, rdsClusterName string) error {
-	// TODO: figure out if there is a better way to handle any instance name or to just delete all instances inside cluster
-	rdsInstanceName := rdsClusterName + "-0"
+func createRDSInstance(rdsClientSess *rds.RDS, restoreParams map[string]string) error {
+	rdsClusterName := restoreParams["restoreRDS"]
+	rdsInstanceName := restoreParams["restoreRDS"] + "-0" // TODO: this should be handled better
+
 	input := &rds.CreateDBInstanceInput{
 		DBClusterIdentifier:  aws.String(rdsClusterName),
 		DBInstanceIdentifier: aws.String(rdsInstanceName),
-		DBInstanceClass:      aws.String("db.t3.small"),
-		Engine:               aws.String("aurora-mysql"),
+		DBInstanceClass:      aws.String(restoreParams["rdsInstanceType"]),
+		Engine:               aws.String(restoreParams["rdsEngine"]),
 	}
 
 	fmt.Printf("Creating RDS Instance [%v] in RDS cluster [%v]\n", rdsInstanceName, rdsClusterName)
@@ -358,9 +382,9 @@ func createRDSInstance(rdsClientSess *rds.RDS, rdsClusterName string) error {
 }
 
 // Delete RDS Intance in RDS Cluster
-func deleteRDSInstance(rdsClientSess *rds.RDS, rdsClusterName string) error {
-	// TODO: figure out if there is a better way to handle any instance name or to just delete all instances inside cluster
-	rdsInstanceName := rdsClusterName + "-0"
+func deleteRDSInstance(rdsClientSess *rds.RDS, restoreParams map[string]string) error {
+	rdsClusterName := restoreParams["restoreRDS"]
+	rdsInstanceName := rdsClusterName + "-0" // TODO: this should be handled better
 
 	input := &rds.DeleteDBInstanceInput{
 		DBInstanceIdentifier: aws.String(rdsInstanceName),
@@ -407,7 +431,9 @@ func deleteRDSInstance(rdsClientSess *rds.RDS, rdsClusterName string) error {
 }
 
 // Delete RDS Cluster
-func deleteRDSCluster(rdsClientSess *rds.RDS, rdsClusterName string) error {
+func deleteRDSCluster(rdsClientSess *rds.RDS, restoreParams map[string]string) error {
+	rdsClusterName := restoreParams["restoreRDS"]
+
 	input := &rds.DeleteDBClusterInput{
 		DBClusterIdentifier: aws.String(rdsClusterName),
 		SkipFinalSnapshot:   aws.Bool(true),
@@ -450,8 +476,8 @@ func deleteRDSCluster(rdsClientSess *rds.RDS, rdsClusterName string) error {
 }
 
 // Check if RDS instance exists
-func rdsInstanceExists(rdsClientSess *rds.RDS, rdsClusterName string) (dbExists bool, checkDBExistsErr error) {
-	// TODO: figure out if there is a better way to handle any instance name or to just delete all instances inside cluster
+func rdsInstanceExists(rdsClientSess *rds.RDS, restoreParams map[string]string) (dbExists bool, checkDBExistsErr error) {
+	rdsClusterName := restoreParams["restoreRDS"]
 	rdsInstanceName := rdsClusterName + "-0"
 
 	input := &rds.DescribeDBInstancesInput{
@@ -484,7 +510,9 @@ func rdsInstanceExists(rdsClientSess *rds.RDS, rdsClusterName string) (dbExists 
 }
 
 // Check if RDS cluster exists
-func rdsClusterExists(rdsClientSess *rds.RDS, rdsClusterName string) (dbExists bool, checkDBExistsErr error) {
+func rdsClusterExists(rdsClientSess *rds.RDS, restoreParams map[string]string) (dbExists bool, checkDBExistsErr error) {
+	rdsClusterName := restoreParams["restoreRDS"]
+
 	input := &rds.DescribeDBClustersInput{
 		DBClusterIdentifier: aws.String(rdsClusterName),
 	}
@@ -515,7 +543,9 @@ func rdsClusterExists(rdsClientSess *rds.RDS, rdsClusterName string) (dbExists b
 }
 
 // Wait until RDS Cluster is fully deleted
-func waitUntilRDSClusterDeleted(rdsClientSess *rds.RDS, rdsClusterName string) error {
+func waitUntilRDSClusterDeleted(rdsClientSess *rds.RDS, restoreParams map[string]string) error {
+
+	rdsClusterName := restoreParams["restoreRDS"]
 
 	input := &rds.DescribeDBClustersInput{
 		DBClusterIdentifier: aws.String(rdsClusterName),
@@ -544,12 +574,12 @@ func waitUntilRDSClusterDeleted(rdsClientSess *rds.RDS, rdsClusterName string) e
 	maxWaitAttempts := 120
 
 	// Check until deleted
-	for i := 0; i < maxWaitAttempts; i++ {
+	for waitAttempt := 0; waitAttempt < maxWaitAttempts; waitAttempt++ {
 		elapsedTime := time.Since(start).Seconds()
 
-		if maxWaitAttempts > 0 {
+		if waitAttempt > 0 {
 			formattedTime := strings.Split(fmt.Sprintf("%6v", elapsedTime), ".")
-			fmt.Printf("Deletion elapsed time: %vs\n", formattedTime[0])
+			fmt.Printf("Cluster deletion elapsed time: %vs\n", formattedTime[0])
 		}
 
 		resp, err := rdsClientSess.DescribeDBClusters(input)
@@ -579,7 +609,9 @@ func waitUntilRDSClusterDeleted(rdsClientSess *rds.RDS, rdsClusterName string) e
 }
 
 // Wait until RDS Cluster is fully created
-func waitUntilRDSClusterCreated(rdsClientSess *rds.RDS, rdsClusterName string) error {
+func waitUntilRDSClusterCreated(rdsClientSess *rds.RDS, restoreParams map[string]string) error {
+	rdsClusterName := restoreParams["restoreRDS"]
+
 	maxWaitAttempts := 120
 
 	input := &rds.DescribeDBClustersInput{
@@ -590,11 +622,12 @@ func waitUntilRDSClusterCreated(rdsClientSess *rds.RDS, rdsClusterName string) e
 
 	start := time.Now()
 
-	for i := 0; i < maxWaitAttempts; i++ {
+	// Check until created
+	for waitAttempt := 0; waitAttempt < maxWaitAttempts; waitAttempt++ {
 		elapsedTime := time.Since(start)
-		if maxWaitAttempts > 0 {
+		if waitAttempt > 0 {
 			formattedTime := strings.Split(fmt.Sprintf("%6v", elapsedTime), ".")
-			fmt.Printf("Deletion elapsed time: %vs\n", formattedTime[0])
+			fmt.Printf("Cluster creation elapsed time: %vs\n", formattedTime[0])
 		}
 
 		resp, err := rdsClientSess.DescribeDBClusters(input)
@@ -614,9 +647,9 @@ func waitUntilRDSClusterCreated(rdsClientSess *rds.RDS, rdsClusterName string) e
 }
 
 // Wait until RDS instance in RDS Cluster is fully created
-func waitUntilRDSInstanceDeleted(rdsClientSess *rds.RDS, rdsClusterName string) error {
-	// TODO: figure out if there is a better way to handle any instance name or to just delete all instances inside cluster
-	rdsInstanceName := rdsClusterName + "-0"
+func waitUntilRDSInstanceDeleted(rdsClientSess *rds.RDS, restoreParams map[string]string) error {
+	rdsClusterName := restoreParams["restoreRDS"]
+	rdsInstanceName := rdsClusterName + "-0" // TODO: this should be handled better
 
 	input := &rds.DescribeDBInstancesInput{
 		DBInstanceIdentifier: aws.String(rdsInstanceName),
@@ -628,48 +661,95 @@ func waitUntilRDSInstanceDeleted(rdsClientSess *rds.RDS, rdsClusterName string) 
 		if aerr, ok := describeErr.(awserr.Error); ok {
 			if aerr.Code() == rds.ErrCodeDBInstanceNotFoundFault {
 				fmt.Println(rds.ErrCodeDBInstanceNotFoundFault, aerr.Error())
-				return fmt.Errorf("Wait RDS instance deletion err %v", describeErr)
+				return fmt.Errorf("Wait RDS instance delete err %v", describeErr)
 			} else {
 				// Print the error, cast err to awserr.Error to get the Code and Message from an error.
 				fmt.Println(describeErr.Error())
-				return fmt.Errorf("Wait RDS instance deletion err %v", describeErr)
+				return fmt.Errorf("Wait RDS instance delete err %v", describeErr)
 			}
 		}
 	}
 
+	start := time.Now()
+	maxWaitAttempts := 120
+
 	fmt.Printf("Wait until RDS instance [%v] in cluster [%v] is fully deleted...\n", rdsInstanceName, rdsClusterName)
 
-	// Wait until RDS instance deleted
-	waitErr := rdsClientSess.WaitUntilDBInstanceDeleted(input)
-	if waitErr != nil {
-		fmt.Printf("RDS instance [%v] deleted successfully in RDS cluster [%v]\n", rdsInstanceName, rdsClusterName)
-		return nil
-	}
+	// Check until deleted
+	for waitAttempt := 0; waitAttempt < maxWaitAttempts; waitAttempt++ {
+		elapsedTime := time.Since(start)
+		if waitAttempt > 0 {
+			formattedTime := strings.Split(fmt.Sprintf("%6v", elapsedTime), ".")
+			fmt.Printf("Instance deletion elapsed time: %vs\n", formattedTime[0])
+		}
 
+		resp, describeErr := rdsClientSess.DescribeDBInstances(input)
+
+		if describeErr != nil {
+			if aerr, ok := describeErr.(awserr.Error); ok {
+				if aerr.Code() == rds.ErrCodeDBInstanceNotFoundFault {
+					fmt.Println("RDS Instance deleted successfully")
+					return nil
+				} else {
+					// Print the error, cast err to awserr.Error to get the Code and Message from an error.
+					fmt.Println(describeErr.Error())
+					return fmt.Errorf("Wait RDS instance delete err %v", describeErr)
+				}
+			}
+		}
+
+		fmt.Printf("Instance status: [%s]\n", *resp.DBInstances[0].DBInstanceStatus)
+		// TODO: do i need to loop through this if more instances need to be deleted ? 
+		if *resp.DBInstances[0].DBInstanceStatus== "terminated" {
+			fmt.Printf("RDS instance [%v] deleted successfully\n", rdsClusterName)
+			return nil
+		}
+		time.Sleep(30 * time.Second)
+
+	}
 	fmt.Printf("RDS instance [%v] deleted successfully in RDS cluster [%v]\n", rdsInstanceName, rdsClusterName)
 	return nil
 }
 
 // Wait until RDS instance in RDS Cluster is fully created
-func waitUntilRDSInstanceCreated(rdsClientSess *rds.RDS, rdsClusterName string) error {
-	// TODO: figure out if there is a better way to handle any instance name or to just delete all instances inside cluster
-	rdsInstanceName := rdsClusterName + "-0"
+func waitUntilRDSInstanceCreated(rdsClientSess *rds.RDS, restoreParams map[string]string) error {
+	rdsClusterName := restoreParams["restoreRDS"]
+	rdsInstanceName := rdsClusterName + "-0" // TODO: this should be handled better
 
 	input := &rds.DescribeDBInstancesInput{
 		DBInstanceIdentifier: aws.String(rdsInstanceName),
 	}
 
+	start := time.Now()
+	maxWaitAttempts := 120
+
 	fmt.Printf("Wait until RDS instance [%v] in cluster [%v] is fully created ...\n", rdsInstanceName, rdsClusterName)
 
-	err := rdsClientSess.WaitUntilDBInstanceAvailable(input)
-	if err != nil {
-		return fmt.Errorf("Wait RDS instance creation timeout err [%v]", err)
-	}
+	for waitAttempt := 0; waitAttempt < maxWaitAttempts; waitAttempt++ {
+		elapsedTime := time.Since(start)
+		if waitAttempt > 0 {
+			formattedTime := strings.Split(fmt.Sprintf("%6v", elapsedTime), ".")
+			fmt.Printf("Instance creation elapsed time: %vs\n", formattedTime[0])
+		}
 
+		resp, err := rdsClientSess.DescribeDBInstances(input)
+
+		if err != nil {
+			return fmt.Errorf("Wait RDS instance create err %v", err)
+		}
+
+		fmt.Printf("Instance status: [%s]\n", *resp.DBInstances[0].DBInstanceStatus)
+		if *resp.DBInstances[0].DBInstanceStatus== "available" {
+			fmt.Printf("RDS instance [%v] created successfully\n", rdsClusterName)
+			return nil
+		}
+		time.Sleep(30 * time.Second)
+	}
 	fmt.Printf("RDS instance [%v] created successfully in RDS cluster [%v]\n", rdsInstanceName, rdsClusterName)
 	return nil
 }
 
+// Time formatting helper
 func fmtDuration(d time.Duration) string {
 	d = d.Round(time.Minute)
 	h := d / time.Hour
