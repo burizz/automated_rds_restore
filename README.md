@@ -20,3 +20,7 @@ export rdsInstanceType="db.t3.small"
 # optional rds engine - defaults to aurora-mysql
 export rdsEngine="aurora-mysql"
 ```
+
+todo : 
+// optional parameter group - defaults to default.aurora-mysql5.7
+export rdsParameterGroup="default.aurora-mysql5.7"

@@ -39,6 +39,12 @@ func main() {
 	// Optional rds engine - defaults to aurora-mysql
 	rdsEngine := os.Getenv("rdsEngine")
 
+	// TODO: figure out how to add this to created cluster without too many conditionals
+	 // both on - db_cluster_parameter_group_name and db_parameter_group_name
+
+	// Optional parameter group - defaults to default.aurora-mysql5.7
+	//rdsParameterGroup := os.Getenv("rdsParameterGroup")
+
 	// Params
 	var restoreParams = map[string]string{
 		"awsRegion": awsRegion,
@@ -80,6 +86,13 @@ func main() {
 	} else {
 		restoreParams["rdsEngine"] = "aurora-mysql"
 	}
+
+	//// If rds parameter group provided change default
+	//if rdsEngine != "" {
+		//restoreParams["rdsParameterGroup"] = rdsParameterGroup
+	//} else {
+		//restoreParams["rdsParameterGroup"] = "default.aurora-mysql5.7"
+	//}
 
 	// Check if RDS instance exists, if it doesn't, skip Instance delete step
 	rdsInstanceExists, checkRDSInstanceExistsErr := rdsInstanceExists(rdsClient, restoreParams)
