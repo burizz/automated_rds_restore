@@ -12,26 +12,50 @@ import (
 	"github.com/aws/aws-sdk-go/service/rds"
 )
 
+// TODO: bitbucket pipeline to build and push in ECR
+// TODO: k8s cron job deploy - pulumi or helm
+// TODO: add monitoring if it fails to generate an alert
+// TODO: test if replaced instance will be detected properly by Terraform and not try to replace it again
+// TODO: implement instance Wait functions in the same way as the cluster ones
+// TODO: loglevel = "DEBUG"
+// TODO: go through remaining todos in code
+
 func main() {
-	// TODO: setup docker image
-	// TODO: bitbucket pipeline to build and push in ECR
-	// TODO: k8s cron job deploy - pulumi or helm
-	// TODO: add monitoring if it fails to generate an alert
-	// TODO: test if replaced instance will be detected properly by Terraform and not try to replace it again
-	awsRegion := "us-east-1"
-	sourceRDS := "schedool-db"
-	restoreRDS := "schedool-restore-db"
-	rdsSubnetGroup := "rds-private-subnet"
-	rdsSecurityGroupId := "sg-04954e709e0dd8068"
-	// TODO: if restoreTime provided use it instead of UseLatestRestorableTime
-	// restoreTime := ""
-	// TODO: loglevel = "DEBUG"
+	// Env Vars
+	awsRegion := os.Getenv("awsRegion")
+	sourceRDS := os.Getenv("sourceRDS")
+	restoreRDS := os.Getenv("restoreRDS")
+	rdsSubnetGroup := os.Getenv("rdsSubnetGroup")
+	rdsSecurityGroupId := os.Getenv("rdsSecurityGroupId")
+	// Optional restore date and time, if not provided will restore latest 
+	restoreDate := os.Getenv("restoreDate")
+	restoreTime := os.Getenv("restoreTime")
+
+	// Params
+	var restoreParams = map[string]string{
+		"awsRegion": awsRegion,
+		"sourceRDS": sourceRDS,
+		"restoreRDS": restoreRDS,
+		"rdsSubnetGroup": rdsSubnetGroup,
+		"rdsSecurityGroupId": rdsSecurityGroupId,
+	}
 
 	// Init AWS Session and RDS Client
 	rdsClient, initErr := initRDSClient(awsRegion)
 	if initErr != nil {
 		fmt.Printf("Init Err: %v", initErr)
 		os.Exit(1)
+	}
+
+	// If date and time provided use it instead of last restorable time
+	if restoreDate != "" {
+		if restoreTime != "" {
+			restoreParams["restoreFromTime"] = restoreDate + "T" + restoreTime + ".000Z"
+		} else {
+			restoreParams["restoreFromTime"] = restoreDate + "T01:00:00.000Z"
+		}
+
+		fmt.Printf("Restore time set to %v\n", restoreParams["restoreFromTime"])
 	}
 
 	// Check if RDS instance exists, if it doesn't, skip Instance delete step
@@ -82,7 +106,7 @@ func main() {
 	}
 
 	// Restore point in time RDS into a new cluster
-	restoreErr := restorePointInTimeRDS(rdsClient, sourceRDS, restoreRDS, rdsSubnetGroup, rdsSecurityGroupId)
+	restoreErr := restorePointInTimeRDS(rdsClient, restoreParams)
 	if restoreErr != nil {
 		fmt.Printf("Restore Point-In-Time RDS Err: %v", restoreErr)
 		os.Exit(1)
@@ -124,95 +148,123 @@ func initRDSClient(awsRegion string) (*rds.RDS, error) {
 	return svc, nil
 }
 
-func restorePointInTimeRDS(rdsClientSess *rds.RDS, sourceRDS string, destinationRDS string, rdsSubnetGroup string, rdsSecurityGroupId string) error {
-	// Restore RDS cluster into a new cluster using point in time
-	input := &rds.RestoreDBClusterToPointInTimeInput{
-		DBClusterIdentifier:       aws.String(destinationRDS), // Required
-		UseLatestRestorableTime:   aws.Bool(true),             // Required
-		DBSubnetGroupName:         aws.String(rdsSubnetGroup), // Not Required
-		SourceDBClusterIdentifier: aws.String(sourceRDS),      // Required
-		VpcSecurityGroupIds: []*string{
-			aws.String(rdsSecurityGroupId), // Not Required
-		},
-		Tags: []*rds.Tag{
-			{
-				Key:   aws.String("ManagedBy"),
-				Value: aws.String("Terraform"),
+func restorePointInTimeRDS(rdsClientSess *rds.RDS, restoreParams map[string]string) error {
+
+	var input *rds.RestoreDBClusterToPointInTimeInput
+
+	if restoreParams["restoreFromTime"] != "" {
+		parsedTime, parseTimeErr := time.Parse(time.RFC3339, restoreParams["restoreFromTime"])
+		if parseTimeErr != nil {
+			return fmt.Errorf("Cannot Parse Time format: %v", parseTimeErr)
+		}
+
+		input = &rds.RestoreDBClusterToPointInTimeInput{
+			DBClusterIdentifier:       aws.String(restoreParams["restoreRDS"]),		// Required
+			UseLatestRestorableTime:   aws.Bool(false),								// Required
+			RestoreToTime:			   aws.Time(parsedTime),						// Reqired if UseLatestRestorableTime is false
+			DBSubnetGroupName:         aws.String(restoreParams["rdsSubnetGroup"]), // Not Required
+			SourceDBClusterIdentifier: aws.String(restoreParams["sourceRDS"]),      // Required
+			VpcSecurityGroupIds: []*string{
+				aws.String(restoreParams["rdsSecurityGroupId"]),
 			},
-		},
+			Tags: []*rds.Tag{														// Not required
+				{
+					Key:   aws.String("ManagedBy"),
+					Value: aws.String("Terraform"),
+				},
+			},
+		}
+	} else {
+		input = &rds.RestoreDBClusterToPointInTimeInput{
+			DBClusterIdentifier:       aws.String(restoreParams["restoreRDS"]),		// Required
+			UseLatestRestorableTime:   aws.Bool(true),								// Required
+			DBSubnetGroupName:         aws.String(restoreParams["rdsSubnetGroup"]), // Not Required
+			SourceDBClusterIdentifier: aws.String(restoreParams["sourceRDS"]),      // Required
+			VpcSecurityGroupIds: []*string{
+				aws.String(restoreParams["rdsSecurityGroupId"]),
+			},
+			Tags: []*rds.Tag{														// Not required
+				{
+					Key:   aws.String("ManagedBy"),
+					Value: aws.String("Terraform"),
+				},
+			},
+		}
 	}
 
-	fmt.Printf("Creating RDS cluster [%v] from latest Point-In-Time restore of [%v]\n", destinationRDS, sourceRDS)
+	fmt.Printf("Creating RDS cluster [%v] from latest Point-In-Time restore of [%v]\n", restoreParams["restoreRDS"], restoreParams["sourceRDS"])
 
 	_, err := rdsClientSess.RestoreDBClusterToPointInTime(input)
+	errMsg := fmt.Sprintf("Error restoring RDS cluster [%v] -> [%v]", restoreParams["sourceRDS"], restoreParams["restoreRDS"])
 	if err != nil {
 		if aerr, ok := err.(awserr.Error); ok {
 			switch aerr.Code() {
 			case rds.ErrCodeDBClusterAlreadyExistsFault:
 				fmt.Println(rds.ErrCodeDBClusterAlreadyExistsFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeDBClusterNotFoundFault:
 				fmt.Println(rds.ErrCodeDBClusterNotFoundFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeDBClusterQuotaExceededFault:
 				fmt.Println(rds.ErrCodeDBClusterQuotaExceededFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeDBClusterSnapshotNotFoundFault:
 				fmt.Println(rds.ErrCodeDBClusterSnapshotNotFoundFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeDBSubnetGroupNotFoundFault:
 				fmt.Println(rds.ErrCodeDBSubnetGroupNotFoundFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeInsufficientDBClusterCapacityFault:
 				fmt.Println(rds.ErrCodeInsufficientDBClusterCapacityFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeInsufficientStorageClusterCapacityFault:
 				fmt.Println(rds.ErrCodeInsufficientStorageClusterCapacityFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeInvalidDBClusterSnapshotStateFault:
 				fmt.Println(rds.ErrCodeInvalidDBClusterSnapshotStateFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeInvalidDBClusterStateFault:
 				fmt.Println(rds.ErrCodeInvalidDBClusterStateFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeInvalidDBSnapshotStateFault:
 				fmt.Println(rds.ErrCodeInvalidDBSnapshotStateFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeInvalidRestoreFault:
 				fmt.Println(rds.ErrCodeInvalidRestoreFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeInvalidSubnet:
 				fmt.Println(rds.ErrCodeInvalidSubnet, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeInvalidVPCNetworkStateFault:
 				fmt.Println(rds.ErrCodeInvalidVPCNetworkStateFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeKMSKeyNotAccessibleFault:
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				fmt.Println(rds.ErrCodeKMSKeyNotAccessibleFault, aerr.Error())
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeOptionGroupNotFoundFault:
 				fmt.Println(rds.ErrCodeOptionGroupNotFoundFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeStorageQuotaExceededFault:
 				fmt.Println(rds.ErrCodeStorageQuotaExceededFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeDomainNotFoundFault:
 				fmt.Println(rds.ErrCodeDomainNotFoundFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			case rds.ErrCodeDBClusterParameterGroupNotFoundFault:
 				fmt.Println(rds.ErrCodeDBClusterParameterGroupNotFoundFault, aerr.Error())
-				return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+				return fmt.Errorf(errMsg)
 			default:
 				fmt.Println(aerr.Error())
 			}
 		} else {
 			// Print the error, cast err to awserr.Error to get the Code and Message from an error.
 			fmt.Println(err.Error())
-			return fmt.Errorf("Error restoring RDS cluster [%v] -> [%v]", sourceRDS, destinationRDS)
+			return fmt.Errorf(errMsg)
 		}
 	}
 
 	// TODO: DEBUG - fmt.Println(result)
-	fmt.Printf("Executed RDS point-in-time restore for clusters [%v] -> [%v]\n", sourceRDS, destinationRDS)
+	fmt.Printf("Executed RDS point-in-time restore for clusters [%v] -> [%v]\n", restoreParams["restoreRDS"], restoreParams["sourceRDS"])
 	return nil
 }
 
@@ -590,8 +642,6 @@ func waitUntilRDSInstanceDeleted(rdsClientSess *rds.RDS, rdsClusterName string) 
 	// Wait until RDS instance deleted
 	waitErr := rdsClientSess.WaitUntilDBInstanceDeleted(input)
 	if waitErr != nil {
-		// TODO: remove this if not needed
-		// return fmt.Errorf("Wait RDS instance deletion timeout err -  [%v]", waitErr)
 		fmt.Printf("RDS instance [%v] deleted successfully in RDS cluster [%v]\n", rdsInstanceName, rdsClusterName)
 		return nil
 	}
