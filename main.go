@@ -13,9 +13,7 @@ import (
 )
 
 // TODO: test if replaced instance will be detected properly by Terraform and not try to replace it again
-// TODO: bitbucket pipeline to build and push in ECR
 // TODO: k8s cron job deploy - pulumi or helm
-// TODO: implement instance Wait functions in the same way as the cluster ones
 // TODO: loglevel = "DEBUG"
 // TODO: delete all instances inside cluster, nevermind how many they are
 // TODO: add monitoring if it fails to generate an alert
@@ -314,6 +312,7 @@ func createRDSInstance(rdsClientSess *rds.RDS, restoreParams map[string]string) 
 		DBInstanceIdentifier: aws.String(rdsInstanceName),
 		DBInstanceClass:      aws.String(restoreParams["rdsInstanceType"]),
 		Engine:               aws.String(restoreParams["rdsEngine"]),
+		//AvailabilityZone:	  aws.String("us-east-1a"), // TODO: this doesn't help the terraform issue 
 	}
 
 	fmt.Printf("Creating RDS Instance [%v] in RDS cluster [%v]\n", rdsInstanceName, rdsClusterName)
