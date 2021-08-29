@@ -1,6 +1,5 @@
 ### Build stage
 FROM golang:1.16-alpine AS go-build
-#RUN apk add --no-cache git
 
 ENV SRC_DIR=/go/src/github.com/eduspire/automated_rds_restore
 
@@ -12,13 +11,6 @@ COPY ./go.sum ./go.sum
 RUN go get -d -v ./...
 
 COPY ./main.go ./main.go
-#COPY .env .env
-#COPY ./config/ ./config/
-#COPY ./server/ ./server/
-#COPY ./storage/ ./storage/
-#COPY ./teams/ ./teams/
-#COPY ./seed/ ./seed/
-
 # Run Unit tests
 #RUN CGO_ENABLED=0 go test -v test/tests.go
 
@@ -28,19 +20,11 @@ RUN go build -o bin/automated_rds_restore main.go
 
 ### Run stage
 FROM alpine:latest
-#RUN apk add ca-certificates
 
-#ENV ENV_TYPE=DOCKER
 ENV SRC_DIR=/go/src/github.com/eduspire/automated_rds_restore
 
 WORKDIR /usr/local/bin
 
-#COPY --from=go-build ${SRC_DIR}/seed ./seed/
-#COPY --from=go-build ${SRC_DIR}/.env .
 COPY --from=go-build ${SRC_DIR}/bin/automated_rds_restore .
-
-RUN ls -alh && pwd
-
-#EXPOSE 8080
 
 CMD [ "automated_rds_restore" ]
